@@ -290,8 +290,9 @@ int fxp_run_waker(struct fxp_context *ctx) {
         if (fxp_enable_perf_group(ctx->perf) < 0)
             return -1;
 
-        if (fxp_futex_wake(&ctx->shm->word, wake_index) != ctx->num_waiters)
-            --i;
+        if (fxp_futex_wake(&ctx->shm->word, wake_index) != ctx->num_waiters) {
+            return -1;
+        }
 
         if (fxp_disable_perf_group(ctx->perf) < 0)
             return -1;
@@ -299,6 +300,9 @@ int fxp_run_waker(struct fxp_context *ctx) {
         fxp_perf_report report;
         if (fxp_get_perf_report(ctx->perf, &report) < 0)
             return -1;
+
+        fprintf(stderr, "%lu,%lu\n", report[FUP_COUNTER_CYCLES],
+                report[FUP_COUNTER_INSTRUCTIONS]);
 
         fxp_free_perf_report(report);
 

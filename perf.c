@@ -87,8 +87,6 @@ int fxp_perf_group_create_counter(struct fxp_perf_group *group, int fxp_type,
     attr.config = config;
     attr.disabled = 1;
 
-    attr.exclude_hv = 1;
-
     switch (include) {
         break;
     case FUP_PERF_INCLUDE_KERNEL:
@@ -157,10 +155,11 @@ int fxp_disable_perf_group(struct fxp_perf_group *group) {
 
 int fxp_get_perf_report(struct fxp_perf_group *group, fxp_perf_report *report) {
     *report = malloc(sizeof(uint64_t) * FUP_COUNTERS_LEN);
+
     for (int i = 0; i < FUP_COUNTERS_LEN; ++i) {
         if (read(group->counters[i].fd, &(*report)[i], sizeof(uint64_t)) !=
             sizeof(uint64_t)) {
-            perror("read perf counter");
+            perror("read perf event value");
             goto error;
         }
     }
