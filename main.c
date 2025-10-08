@@ -16,6 +16,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "perf.h"
+
 static struct option long_options[] = {
     {"num-waiters", 1, NULL, 'w'},
     {"shm-directory", 1, NULL, 'd'},
@@ -24,11 +26,11 @@ static struct option long_options[] = {
     {0, 0, 0, 0},
 };
 
-sig_atomic_t fup_interrupted_v = 0;
-void fup_interrupted(int _) { fup_interrupted_v = 1; }
-int fup_was_interrupted() { return fup_interrupted_v; }
+sig_atomic_t fxp_interrupted_v = 0;
+void fxp_interrupted(int _) { fxp_interrupted_v = 1; }
+int fxp_was_interrupted() { return fxp_interrupted_v; }
 
-void fup_timespec_diff(struct timespec *const start,
+void fxp_timespec_diff(struct timespec *const start,
                        struct timespec *const stop, struct timespec *result) {
     if ((stop->tv_nsec - start->tv_nsec) < 0) {
         result->tv_sec = stop->tv_sec - start->tv_sec - 1;
@@ -41,28 +43,29 @@ void fup_timespec_diff(struct timespec *const start,
     return;
 }
 
-uint64_t fup_timespec_nanos(struct timespec *const ts) {
+uint64_t fxp_timespec_nanos(struct timespec *const ts) {
     return ts->tv_nsec + ts->tv_sec * 1000000000ULL;
 }
 
-void fup_nanos_timespec(uint64_t nanos, struct timespec *ts) {
+void fxp_nanos_timespec(uint64_t nanos, struct timespec *ts) {
     ts->tv_sec = nanos / 1000000000ULL;
     ts->tv_nsec = nanos % 1000000000ULL;
 }
 
-void fup_millisleep(int ms) {
+void fxp_millisleep(int ms) {
     struct timespec ts;
-    fup_nanos_timespec(ms * 1000000, &ts);
+    fxp_nanos_timespec(ms * 1000000, &ts);
     nanosleep(&ts, NULL);
 }
 
-struct fup_shm {
+struct fxp_shm {
     uint32_t word;
     _Atomic uint64_t wait_cnt;
     _Atomic uint64_t woken_cnt;
+    _Atomic int abort;
 };
 
-struct fup_context {
+struct fxp_context {
     char *shm_dirname;
     char *shm_filename;
     int shm_fd;
@@ -78,10 +81,12 @@ struct fup_context {
     uint64_t tmax;
     uint64_t tavg;
 
-    struct fup_shm *shm;
+    struct fxp_shm *shm;
+
+    struct fxp_perf_group *perf;
 };
 
-int fup_futex_wait(uint32_t *word, int val) {
+int fxp_futex_wait(uint32_t *word, int val) {
     for (;;) {
         int ret = syscall(SYS_futex, word, FUTEX_WAIT, val, NULL, NULL, 0);
         if (ret != EAGAIN) {
@@ -94,12 +99,12 @@ int fup_futex_wait(uint32_t *word, int val) {
     }
 }
 
-int fup_futex_wake(uint32_t *word, int v) {
+int fxp_futex_wake(uint32_t *word, int v) {
     *word = v;
     return syscall(SYS_futex, word, FUTEX_WAKE, INT_MAX, NULL, NULL, 0);
 }
 
-int fup_report(struct fup_context *ctx) {
+int fxp_report(struct fxp_context *ctx) {
     uint64_t sum = 0;
     for (int i = 0; i < ctx->num_iterations; ++i) {
         if ((UINT64_MAX - sum) < ctx->tarr[i]) {
@@ -116,7 +121,7 @@ int fup_report(struct fup_context *ctx) {
     return 0;
 }
 
-int fup_context_validate(struct fup_context *const ctx) {
+int fxp_context_validate(struct fxp_context *const ctx) {
     if (ctx->num_waiters < 0) {
         return 1;
     }
@@ -132,7 +137,7 @@ int fup_context_validate(struct fup_context *const ctx) {
     return 0;
 }
 
-int fup_context_init(struct fup_context *ctx) {
+int fxp_context_init(struct fxp_context *ctx) {
     int fd;
     int ret = 0;
     int pid = getpid();
@@ -144,7 +149,7 @@ int fup_context_init(struct fup_context *ctx) {
     ctx->shm_filename = malloc(sl);
     if (snprintf(ctx->shm_filename, sl, "%s/futex_perf%d", ctx->shm_dirname,
                  pid) > sl) {
-        ret = 1;
+        ret = -1;
         goto error;
     }
 
@@ -165,30 +170,33 @@ error:
     return ret;
 }
 
-void fup_context_cleanup(struct fup_context *context) {
-    if (context->shm_filename != NULL)
-        free(context->shm_filename);
+void fxp_context_cleanup(struct fxp_context *ctx) {
+    if (ctx->shm_filename != NULL)
+        free(ctx->shm_filename);
 
-    if (context->shm_dirname)
-        free(context->shm_dirname);
+    if (ctx->shm_dirname)
+        free(ctx->shm_dirname);
 
-    if (context->tarr)
-        free(context->tarr);
+    if (ctx->tarr)
+        free(ctx->tarr);
 
-    context->shm_filename = NULL;
-    context->shm_dirname = NULL;
-    context->tarr = NULL;
+    if (ctx->perf)
+        fxp_free_perf_group(ctx->perf);
+
+    ctx->shm_filename = NULL;
+    ctx->shm_dirname = NULL;
+    ctx->tarr = NULL;
 }
 
-int fup_shm_alloc(struct fup_context *context) {
-    int fd = open(context->shm_filename, O_CREAT | O_TRUNC | O_RDWR,
-                  S_IRUSR | S_IWUSR);
+int fxp_shm_alloc(struct fxp_context *ctx) {
+    int fd =
+        open(ctx->shm_filename, O_CREAT | O_TRUNC | O_RDWR, S_IRUSR | S_IWUSR);
     if (fd < 0) {
         perror("open shm file");
         return 1;
     }
 
-    if (ftruncate(fd, sizeof(struct fup_shm)) < 0) {
+    if (ftruncate(fd, sizeof(struct fxp_shm)) < 0) {
         perror("truncate shm file");
         return 1;
     }
@@ -201,35 +209,40 @@ int fup_shm_alloc(struct fup_context *context) {
     return 0;
 }
 
-void fup_shm_cleanup(struct fup_context *context) {
-    if (unlink(context->shm_filename) < 0) {
-        perror("unlink shm file");
+void fxp_shm_cleanup(struct fxp_context *ctx) {
+    if (ctx->shm_filename) {
+        if (unlink(ctx->shm_filename) < 0) {
+            perror("unlink shm file");
+        }
     }
 }
 
-int fup_shm_open(struct fup_context *context) {
-    int fd = open(context->shm_filename, O_RDWR);
+int fxp_shm_open(struct fxp_context *ctx) {
+    int fd = open(ctx->shm_filename, O_RDWR);
     if (fd < 0) {
         perror("open shm file");
-        return 1;
+        return -1;
     }
 
-    context->shm_fd = fd;
-    context->shm = mmap(NULL, sizeof(struct fup_shm), PROT_READ | PROT_WRITE,
-                        MAP_LOCKED | MAP_SHARED, context->shm_fd, 0);
-    if (context->shm == NULL) {
+    ctx->shm_fd = fd;
+    ctx->shm = mmap(NULL, sizeof(struct fxp_shm), PROT_READ | PROT_WRITE,
+                    MAP_LOCKED | MAP_SHARED, ctx->shm_fd, 0);
+    if (ctx->shm == NULL) {
         perror("map shm file");
-        close(context->shm_fd);
-        context->shm_fd = 0;
-        return 1;
+        close(ctx->shm_fd);
+        ctx->shm_fd = 0;
+        return -1;
     }
 
     return 0;
 }
 
-void fup_shm_close(struct fup_context *context) {
+void fxp_shm_close(struct fxp_context *context) {
     if (context->shm) {
-        munmap(context->shm, sizeof(struct fup_shm));
+        context->shm->abort = 1;
+        fxp_futex_wake(&context->shm->word, INT32_MAX);
+
+        munmap(context->shm, sizeof(struct fxp_shm));
     }
 
     if (context->shm_fd) {
@@ -238,54 +251,63 @@ void fup_shm_close(struct fup_context *context) {
     }
 }
 
-void fup_waker_wait_ready(struct fup_context *ctx) {
+void fxp_waker_wait_ready(struct fxp_context *ctx) {
     do {
-        if (fup_was_interrupted()) {
+        if (fxp_was_interrupted()) {
             return;
         }
 
-        fup_millisleep(1);
+        fxp_millisleep(1);
     } while (atomic_load(&ctx->shm->wait_cnt) != ctx->num_waiters);
 }
 
-void fup_waker_wait_all_woken(struct fup_context *ctx) {
+void fxp_waker_wait_all_woken(struct fxp_context *ctx) {
     do {
-        if (fup_was_interrupted()) {
+        if (fxp_was_interrupted()) {
             return;
         }
 
-        fup_millisleep(1);
+        fxp_millisleep(1);
     } while (atomic_load(&ctx->shm->woken_cnt) != ctx->num_waiters);
 }
 
-void fup_waker_reset(struct fup_context *ctx) {
+void fxp_waker_reset(struct fxp_context *ctx) {
     atomic_exchange(&ctx->shm->woken_cnt, 0);
     atomic_fetch_sub(&ctx->shm->wait_cnt, ctx->num_waiters);
 }
 
-void fup_run_waker(struct fup_context *ctx) {
+int fxp_run_waker(struct fxp_context *ctx) {
     int wake_index = ctx->shm->word;
     struct timespec ts_start, ts_stop, ts_res;
     for (int i = 0; i < ctx->num_iterations; ++i) {
-        if (fup_was_interrupted()) {
-            return;
-        }
+        if (fxp_was_interrupted())
+            break;
 
         ++wake_index;
         // wait for all waiters to have updated the wait_cnt field
-        fup_waker_wait_ready(ctx);
+        fxp_waker_wait_ready(ctx);
 
-        // do the wake
-        clock_gettime(CLOCK_REALTIME, &ts_start);
-        fup_futex_wake(&ctx->shm->word, wake_index);
-        clock_gettime(CLOCK_REALTIME, &ts_stop);
+        if (fxp_enable_perf_group(ctx->perf) < 0)
+            return -1;
+
+        if (fxp_futex_wake(&ctx->shm->word, wake_index) != ctx->num_waiters)
+            --i;
+
+        if (fxp_disable_perf_group(ctx->perf) < 0)
+            return -1;
+
+        fxp_perf_report report;
+        if (fxp_get_perf_report(ctx->perf, &report) < 0)
+            return -1;
+
+        fxp_free_perf_report(report);
 
         // wait for all waiters to have updated the woken_cnt field
-        fup_waker_wait_all_woken(ctx);
-        fup_waker_reset(ctx);
+        fxp_waker_wait_all_woken(ctx);
+        fxp_waker_reset(ctx);
 
-        fup_timespec_diff(&ts_start, &ts_stop, &ts_res);
-        uint64_t tns = fup_timespec_nanos(&ts_res);
+        fxp_timespec_diff(&ts_start, &ts_stop, &ts_res);
+        uint64_t tns = fxp_timespec_nanos(&ts_res);
         if (ctx->tmax < tns)
             ctx->tmax = tns;
         if (ctx->tmin > tns || ctx->tmin == 0)
@@ -293,27 +315,30 @@ void fup_run_waker(struct fup_context *ctx) {
 
         ctx->tarr[i] = tns;
 
-        fup_millisleep(ctx->interval);
+        fxp_millisleep(ctx->interval);
     }
+
+    return 0;
 }
 
-void fup_run_waiter(struct fup_context *ctx) {
+void fxp_run_waiter(struct fxp_context *ctx) {
     int wake_index = 0;
     for (int i = 0; i < ctx->num_iterations; ++i) {
-        if (fup_was_interrupted()) {
+        if (fxp_was_interrupted())
             return;
-        }
+        if (ctx->shm->abort)
+            return;
 
         wake_index = ctx->shm->word;
         atomic_fetch_add(&ctx->shm->wait_cnt, 1);
-        fup_futex_wait(&ctx->shm->word, wake_index);
+        fxp_futex_wait(&ctx->shm->word, wake_index);
         atomic_fetch_add(&ctx->shm->woken_cnt, 1);
     }
 }
 
 int main(int argc, char **argv) {
     int opt, opt_index, ret;
-    struct fup_context ctx = {0};
+    struct fxp_context ctx = {0};
 
     while ((opt = getopt_long(argc, argv, "w:d:n:i:", long_options,
                               &opt_index)) != -1) {
@@ -337,13 +362,13 @@ int main(int argc, char **argv) {
         ctx.shm_dirname = strdup("/dev/shm");
     }
 
-    signal(SIGINT, fup_interrupted);
+    signal(SIGINT, fxp_interrupted);
 
-    if ((ret = fup_context_init(&ctx)) != 0) {
+    if ((ret = fxp_context_init(&ctx)) != 0) {
         goto error;
     }
 
-    if ((ret = fup_shm_alloc(&ctx)) != 0) {
+    if ((ret = fxp_shm_alloc(&ctx)) != 0) {
         goto error;
     }
 
@@ -355,26 +380,28 @@ int main(int argc, char **argv) {
         }
     }
 
-    if ((ret = fup_shm_open(&ctx)) != 0) {
+    if ((ret = fxp_shm_open(&ctx)) != 0) {
         goto error;
     }
 
     if (ctx.is_waiter) {
-        fup_run_waiter(&ctx);
+        fxp_run_waiter(&ctx);
     } else {
-        struct sched_param pm;
-        pm.sched_priority = sched_get_priority_max(SCHED_FIFO);
-        sched_setscheduler(getpid(), SCHED_FIFO, &pm);
-        fup_run_waker(&ctx);
-        fup_report(&ctx);
+        if (fxp_init_perf_group(&ctx.perf) < 0)
+            goto error;
+
+        if (fxp_run_waker(&ctx) < 0)
+            goto error;
+
+        // fxp_report(&ctx);
     }
 error:
-    fup_shm_close(&ctx);
+    fxp_shm_close(&ctx);
 
     if (!ctx.is_waiter)
-        fup_shm_cleanup(&ctx);
+        fxp_shm_cleanup(&ctx);
 
-    fup_context_cleanup(&ctx);
+    fxp_context_cleanup(&ctx);
 
     return ret;
 }

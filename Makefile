@@ -1,8 +1,8 @@
 CC      = gcc
-CFLAGS  = -I.
+CFLAGS  = -O3
 LDFLAGS = -lpthread
-DEPS    =
-OBJ     = main.o 
+DEPS    = perf.h
+OBJ     = main.o perf.o
 
 %.o: %.c $(DEPS)
 	$(CC) -c -o $@ $< $(CFLAGS)
