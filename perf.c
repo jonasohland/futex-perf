@@ -9,9 +9,9 @@
 #include <unistd.h>
 
 enum fxp_perf_event_include {
-    FUP_PERF_INCLUDE_ALL,
-    FUP_PERF_INCLUDE_KERNEL,
-    FUP_PERF_INCLUDE_USER
+    FXP_PERF_INCLUDE_ALL,
+    FXP_PERF_INCLUDE_KERNEL,
+    FXP_PERF_INCLUDE_USER
 };
 
 struct fxp_perf_counter {
@@ -31,9 +31,9 @@ int perf_event_open(struct perf_event_attr *attr, pid_t pid, int cpu,
 int fxp_allocate_perf_group(struct fxp_perf_group **out) {
     *out = malloc(sizeof(struct fxp_perf_group));
     (*out)->counters =
-        malloc(sizeof(struct fxp_perf_counter) * FUP_COUNTERS_LEN);
+        malloc(sizeof(struct fxp_perf_counter) * FXP_COUNTERS_LEN);
     memset((*out)->counters, 0,
-           sizeof(struct fxp_perf_counter) * FUP_COUNTERS_LEN);
+           sizeof(struct fxp_perf_counter) * FXP_COUNTERS_LEN);
 
     struct perf_event_attr attr = {0};
     attr.type = PERF_TYPE_SOFTWARE;
@@ -64,7 +64,7 @@ void fxp_free_perf_group(struct fxp_perf_group *group) {
         return;
 
     if (group->counters) {
-        for (int i = 0; i < FUP_COUNTERS_LEN; ++i) {
+        for (int i = 0; i < FXP_COUNTERS_LEN; ++i) {
             int counter_fd = group->counters[i].fd;
             if (counter_fd != 0) {
                 close(counter_fd);
@@ -89,13 +89,13 @@ int fxp_perf_group_create_counter(struct fxp_perf_group *group, int fxp_type,
 
     switch (include) {
         break;
-    case FUP_PERF_INCLUDE_KERNEL:
+    case FXP_PERF_INCLUDE_KERNEL:
         attr.exclude_user = 1;
         break;
-    case FUP_PERF_INCLUDE_USER:
+    case FXP_PERF_INCLUDE_USER:
         attr.exclude_kernel = 1;
         break;
-    case FUP_PERF_INCLUDE_ALL:
+    case FXP_PERF_INCLUDE_ALL:
         break;
     }
 
@@ -114,12 +114,12 @@ int fxp_init_perf_group(struct fxp_perf_group **group) {
     }
 
     if (fxp_perf_group_create_counter(
-            *group, FUP_COUNTER_CYCLES, PERF_TYPE_HARDWARE,
-            PERF_COUNT_HW_CPU_CYCLES, FUP_PERF_INCLUDE_ALL) < 0)
+            *group, FXP_COUNTER_CYCLES, PERF_TYPE_HARDWARE,
+            PERF_COUNT_HW_CPU_CYCLES, FXP_PERF_INCLUDE_ALL) < 0)
         goto error;
     if (fxp_perf_group_create_counter(
-            *group, FUP_COUNTER_INSTRUCTIONS, PERF_TYPE_HARDWARE,
-            PERF_COUNT_HW_INSTRUCTIONS, FUP_PERF_INCLUDE_ALL) < 0)
+            *group, FXP_COUNTER_INSTRUCTIONS, PERF_TYPE_HARDWARE,
+            PERF_COUNT_HW_INSTRUCTIONS, FXP_PERF_INCLUDE_ALL) < 0)
         goto error;
 
     return 0;
@@ -154,9 +154,9 @@ int fxp_disable_perf_group(struct fxp_perf_group *group) {
 }
 
 int fxp_get_perf_report(struct fxp_perf_group *group, fxp_perf_report *report) {
-    *report = malloc(sizeof(uint64_t) * FUP_COUNTERS_LEN);
+    *report = malloc(sizeof(uint64_t) * FXP_COUNTERS_LEN);
 
-    for (int i = 0; i < FUP_COUNTERS_LEN; ++i) {
+    for (int i = 0; i < FXP_COUNTERS_LEN; ++i) {
         if (read(group->counters[i].fd, &(*report)[i], sizeof(uint64_t)) !=
             sizeof(uint64_t)) {
             perror("read perf event value");

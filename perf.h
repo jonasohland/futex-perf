@@ -7,9 +7,9 @@ struct fxp_perf_group;
 typedef uint64_t *fxp_perf_report;
 
 enum fxp_perf_counter_names {
-    FUP_COUNTER_CYCLES,
-    FUP_COUNTER_INSTRUCTIONS,
-    FUP_COUNTERS_LEN
+    FXP_COUNTER_CYCLES = 0,
+    FXP_COUNTER_INSTRUCTIONS,
+    FXP_COUNTERS_LEN
 };
 
 int fxp_init_perf_group(struct fxp_perf_group **);

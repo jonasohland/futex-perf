@@ -1,6 +1,6 @@
 CC      = gcc
 CFLAGS  = -O3
-LDFLAGS = -lpthread
+LDFLAGS = -lm
 DEPS    = perf.h
 OBJ     = main.o perf.o
 
